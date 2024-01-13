@@ -14,4 +14,7 @@ the serialized names will just be the stringified version of the enum names (cas
 
 for the config file data format, look in https://github.com/Yurihaia/xivc-text-sim/blob/master/src/data.rs.
 
+currently, i don't have enough data for application delays on various skills, but if you have
+data for that and could send it to me i'd appreciate it.
+
 good luck i guess.
