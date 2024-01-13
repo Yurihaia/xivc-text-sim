@@ -1,0 +1,62 @@
+// the timestamp when combat will start.
+in_combat = 9000
+// how long after combat starts will the simulation end.
+end = 120000
+players = [
+    {
+        name = "Rime Frost"
+        job = "SAM"
+        // irrelevant stats can be excluded.
+        stats = {
+            str = 3217
+            crit = 2298
+            det = 1518
+            dh = 1467
+            sks = 705
+        }
+        weapon = {
+            wd = 130
+            auto = 11440
+            delay = 264
+        }
+        player_info = {
+            clan = "Moon"
+            job = "SAM"
+            // only lvl 90 is supported currently.
+            lvl = 90
+        }
+        actions = [
+            "meikyo"
+            // there is by default ~70ms of ani lock, so this uses it when the combat starts.
+            [ 8930 "gekko" ]
+            "ikishoten"
+            "kasha"
+            "yukikaze"
+            "midare"
+            "senei"
+            "kaeshi_setsugekka"
+            "meikyo"
+            "gekko"
+            "higanbana"
+            "namikiri"
+            "shoha"
+            "kaeshi_namikiri"
+            "shinten"
+            "kasha"
+            "gekko"
+        ]
+    }
+]
+enemies = [
+    {
+        name = "Enemy"
+    }
+]
+report = {
+    // this controls what events to print
+    cast_start = true
+    cast_snap = true
+    damage = true
+    status = true
+    job_event = true
+}
