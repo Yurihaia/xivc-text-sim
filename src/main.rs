@@ -33,12 +33,15 @@ fn main() {
     let file = fs::read_to_string("./sim.ycf").unwrap();
     let mut deserializer = ycf::de::TopDeserializer::from_str(&file);
     let data: SimData = SimData::deserialize(&mut deserializer).unwrap();
-    let end = data.end + data.in_combat;
-    let mut sim = Simulation::from_sim_data(data).unwrap();
 
-    while sim.step(end).unwrap() {}
+    for _ in 0..10000 {
+        let end = data.end + data.in_combat;
+        let mut sim = Simulation::from_sim_data(data.clone()).unwrap();
 
-    println!("\n{:#?}", sim);
+        while sim.step(end).unwrap() {}
+
+        println!("{}", sim.world.actors[1].damage);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +60,7 @@ enum SimEvent {
     CastSnap(ActorId, Action),
     Untargetable(ActorId),
     Targetable(ActorId),
+    AutoAttack(ActorId),
 }
 
 #[derive(Debug)]
@@ -85,7 +89,7 @@ impl Simulation {
                     state: RefCell::new(State::default_for(job)),
                 }),
                 statuses: HashMap::new(),
-                target: None,
+                target: Some(ActorId(1)),
                 targetable: true,
             };
 
@@ -94,6 +98,7 @@ impl Simulation {
                 SimEvent::Event(Event::ActorTick(id)),
             );
             events.push(player.first_mp_tick, SimEvent::Event(Event::MpTick(id)));
+            events.push(player.first_auto_attack, SimEvent::AutoAttack(id));
 
             let mut acs = Vec::new();
             // dumb hack
@@ -662,6 +667,30 @@ impl Simulation {
                     if self.report.cast_snap {
                         self.report(time, ReportKind::CastSnap { source: id, action })
                     }
+                }
+            }
+            SimEvent::AutoAttack(id) => {
+                if let Some((actor, ..)) = self
+                    .world
+                    .actors
+                    .get(id.0 as usize)
+                    .and_then(|actor| actor.player.as_ref().map(|v| (actor, v)))
+                {
+                    let handle = ActorHandle {
+                        actor,
+                        id,
+                        world: &self.world,
+                    };
+
+                    if let Some(target) = handle.target() {
+                        let target = target.id();
+
+                        let damage = handle.auto_damage(target, &mut self.rng);
+
+                        self.world.actors[target.0 as usize].damage += damage as u32;
+                    }
+
+                    self.events.push(time + 3000, SimEvent::AutoAttack(id));
                 }
             }
         }

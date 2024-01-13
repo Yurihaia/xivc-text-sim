@@ -38,6 +38,8 @@ pub struct PlayerData {
     #[serde(default)]
     pub first_mp_tick: u32,
     #[serde(default)]
+    pub first_auto_attack: u32,
+    #[serde(default)]
     pub first_action: u32,
     #[serde(default)]
     pub actions: Vec<ActionKind<String>>,
