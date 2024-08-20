@@ -1,5 +1,5 @@
 // the timestamp when combat will start.
-in_combat = 16000
+in_combat = 15000
 // how long after combat starts will the simulation end.
 end = 600000
 players = [

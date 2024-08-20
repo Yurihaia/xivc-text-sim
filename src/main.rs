@@ -638,7 +638,14 @@ impl Simulation {
                                 world: &self.world,
                             };
 
-                            eprintln!("{:?} @ {}", action, time);
+                            let real_time = time as i64 - self.world.in_combat as i64;
+
+                            eprintln!(
+                                "{} @ {}.{:02}",
+                                action.name(),
+                                real_time / 1000,
+                                (real_time.abs() % 1000) / 10
+                            );
 
                             let info = player
                                 .job

@@ -56,9 +56,10 @@ fn cooldown(c: &Controller, action: DncAction) -> u32 {
 async fn cast(c: &mut Controller<'_>, action: DncAction) {
     // analyze warnings.
     use DncAction::*;
+    c.wait_lock().await;
     let state = state(c);
     match action {
-        FanDance | FanDance2 if has_status(c, FAN_DANCE_3) => {
+        FanDance | FanDance2 | Flourish if has_status(c, FAN_DANCE_3) => {
             eprintln!("[warn] fan dance 3 potentially overwritten.");
         }
         ReverseCascade | Fountainfall => {
@@ -297,6 +298,12 @@ async fn burst(c: &mut Controller<'_>) {
     correct_step(c).await;
     cast(c, DncAction::TechnicalFinish).await;
     cast(c, Devilment).await;
+    
+    eprintln!("pool status:");
+    eprintln!("    {} feathers", state(c).feathers.value());
+    eprintln!("    {} fan dance 3", if has_status(c, FAN_DANCE_3) { "yes" } else { "no" });
+    eprintln!("    {} esprit", state(c).esprit.value());
+    eprintln!("    {} last dance", if has_status(c, LAST_DANCE_READY) { "yes" } else { "no" });
 
     // first gcd
     c.wait_gcd().await;
@@ -314,7 +321,9 @@ async fn burst(c: &mut Controller<'_>) {
         cast(c, Flourish).await;
     } else {
         cast(c, Flourish).await;
-        next_feather(c).await;
+        if player(c).gcd >= 650 {
+            next_feather(c).await;
+        }
     }
 
     // second gcd
