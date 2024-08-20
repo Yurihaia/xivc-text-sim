@@ -10,4 +10,4 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 ycf = { git = "https://github.com/Yurihaia/ycf" }
 rand_pcg = "0.3"
-xivc-core = { git ="https://github.com/Yurihaia/xivc", features = ["alloc", "serde"] }
+xivc-core = { path = "../xivc/crates/xivc-core", features = ["alloc", "serde"] }

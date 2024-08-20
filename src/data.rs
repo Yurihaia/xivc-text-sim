@@ -81,7 +81,8 @@ struct StatData {
 }
 
 impl StatData {
+    #[allow(clippy::new_ret_no_self)]
     fn new() -> PlayerStats {
-        PlayerStats::default(90)
+        PlayerStats::default(100)
     }
 }

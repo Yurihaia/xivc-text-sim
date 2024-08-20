@@ -1,56 +1,80 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_else_if)]
+#![feature(noop_waker)]
+#![feature(async_closure)]
+#![feature(async_fn_traits)]
+
 use std::{
     cell::RefCell,
     cmp::Ordering,
     collections::{hash_map, HashMap},
     fmt, fs,
-    iter::{self, Peekable},
-    vec,
+    iter::{self},
 };
 
-use data::{ActionKind, ReportConfig, SimData};
+use data::{ReportConfig, SimData};
+use dncai::DncAi;
 use rand::{prelude::Distribution, thread_rng, Rng, SeedableRng};
 use rand_pcg::Pcg64;
-use serde::{
-    de::value::{Error, StrDeserializer},
-    Deserialize,
-};
+use serde::Deserialize;
 use xivc_core::{
     enums::{DamageElement, DamageInstance, Job},
-    job::{self, CastError, CdMap, DynJob, JobEvent, State},
+    job::{dnc::TECHNICAL_FINISH, CastError, CdGroup, CdMap, DynJob, JobEvent, State},
     math::{Buffs, EotSnapshot, HitTypeHandle, SpeedStat, XivMath},
     timing::{ActionCd, DurationInfo, ScaleTime},
     world::{
         queue::RadixEventQueue,
         status::{StatusEffect, StatusEvent, StatusEventKind, StatusInstance, StatusSnapshot},
         Action, ActionTargetting, ActorId, ActorRef, CriticalHit, DamageEvent, DamageVariance,
-        DirectHit, Event, EventError, EventRng, EventSink, Faction, Positional, WorldRef,
+        DirectHit, Event, EventRng, EventSink, Faction, Positional, WorldRef,
     },
 };
 
 mod data;
+mod dncai;
+mod jobai;
 
 fn main() {
     let file = fs::read_to_string("./sim.ycf").unwrap();
     let mut deserializer = ycf::de::TopDeserializer::from_str(&file);
     let data: SimData = SimData::deserialize(&mut deserializer).unwrap();
 
-    for _ in 0..10000 {
+    for _ in 0..1 {
         let end = data.end + data.in_combat;
         let mut sim = Simulation::from_sim_data(data.clone()).unwrap();
 
         while sim.step(end).unwrap() {}
 
         println!("{}", sim.world.actors[1].damage);
+        // println!("{}", sim.r)
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Simulation {
     world: WorldState,
     events: RadixEventQueue<SimEvent>,
     rng: SimRngSource,
-    actions: HashMap<ActorId, Peekable<vec::IntoIter<ActionKind<Action>>>>,
+    actions: HashMap<ActorId, DynJobAi>,
     report: ReportConfig,
+}
+
+struct DynJobAi(Box<dyn JobAi>);
+
+impl fmt::Debug for DynJobAi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DynNextAction").finish()
+    }
+}
+
+trait JobAi {
+    fn next(
+        &mut self,
+        event: &SimEvent,
+        queue: &mut RadixEventQueue<SimEvent>,
+        actor: ActorHandle,
+        time: u32,
+    ) -> bool;
 }
 
 #[derive(Clone, Debug)]
@@ -61,10 +85,23 @@ enum SimEvent {
     Untargetable(ActorId),
     Targetable(ActorId),
     AutoAttack(ActorId),
+    CheckStatusFalloff,
+    CdEnd(CdEndEvent),
+    SimStart,
+    Other,
+    EspritIdk,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CdEndEvent {
+    Lock,
+    Gcd,
+    JobCd(CdGroup),
 }
 
 #[derive(Debug)]
 enum FromSimDataError {
+    #[allow(dead_code)]
     UnknownAction(Job, String),
 }
 
@@ -84,7 +121,12 @@ impl Simulation {
                     gcd: 0,
                     job: DynJob::from_job(job),
                     lock: 0,
-                    math: XivMath::new(player.stats, player.weapon, player.player_info),
+                    math: {
+                        let mut math =
+                            XivMath::new(player.stats, player.weapon, player.player_info);
+                        math.ex_lock = 50;
+                        math
+                    },
                     mp: 10000,
                     state: RefCell::new(State::default_for(job)),
                 }),
@@ -100,44 +142,49 @@ impl Simulation {
             events.push(player.first_mp_tick, SimEvent::Event(Event::MpTick(id)));
             events.push(player.first_auto_attack, SimEvent::AutoAttack(id));
 
-            let mut acs = Vec::new();
+            // let mut acs = Vec::new();
             // dumb hack
-            for action in player.actions {
-                match action {
-                    ActionKind::Normal(s) => {
-                        acs.push(ActionKind::Normal(Action::Job(
-                            job::Action::deserialize_for(job, StrDeserializer::<Error>::new(&*s))
-                                .map_err(|_| FromSimDataError::UnknownAction(job, s))?,
-                        )));
-                    }
-                    ActionKind::Delay(d, s) => {
-                        acs.push(ActionKind::Delay(
-                            d,
-                            Action::Job(
-                                job::Action::deserialize_for(
-                                    job,
-                                    StrDeserializer::<Error>::new(&*s),
-                                )
-                                .map_err(|_| FromSimDataError::UnknownAction(job, s))?,
-                            ),
-                        ));
-                    }
-                }
-            }
+            // for action in player.actions {
+            //     match action {
+            //         ActionKind::Normal(s) => {
+            //             acs.push(ActionKind::Normal(Action::Job(
+            //                 job::Action::deserialize_for(job, StrDeserializer::<Error>::new(&*s))
+            //                     .map_err(|_| FromSimDataError::UnknownAction(job, s))?,
+            //             )));
+            //         }
+            //         ActionKind::Delay(d, s) => {
+            //             acs.push(ActionKind::Delay(
+            //                 d,
+            //                 Action::Job(
+            //                     job::Action::deserialize_for(
+            //                         job,
+            //                         StrDeserializer::<Error>::new(&*s),
+            //                     )
+            //                     .map_err(|_| FromSimDataError::UnknownAction(job, s))?,
+            //                 ),
+            //             ));
+            //         }
+            //     }
+            // }
 
-            let mut acs = acs.into_iter().peekable();
+            // let mut acs = acs.into_iter().peekable();
 
             // then push the first one in the list to the event list.
-            if let Some(ac) = acs.next() {
-                let (t, ac) = match ac {
-                    ActionKind::Normal(ac) => (player.first_action, ac),
-                    ActionKind::Delay(d, ac) => (player.first_action + d, ac),
-                };
-                events.push(t, SimEvent::StartCast(id, ac));
+            // if let Some(ac) = acs.next() {
+            //     let (t, ac) = match ac {
+            //         ActionKind::Normal(ac) => (player.first_action, ac),
+            //         ActionKind::Delay(d, ac) => (player.first_action + d, ac),
+            //     };
+            //     events.push(t, SimEvent::StartCast(id, ac));
+            // }
+
+            if state.player.is_some() {
+                let acs = Box::new(DncAi::new(id));
+
+                actions.insert(id, DynJobAi(acs));
             }
 
             actors.push(state);
-            actions.insert(id, acs.into_iter());
         }
         for enemy in data.enemies {
             let id = ActorId(actors.len() as u16);
@@ -159,6 +206,9 @@ impl Simulation {
                 events.push(end, SimEvent::Targetable(id));
             }
         }
+
+        events.push(0, SimEvent::EspritIdk);
+        events.push(0, SimEvent::SimStart);
 
         Ok(Self {
             events,
@@ -211,11 +261,50 @@ impl Simulation {
                 "world time ({}), event queue time ({})",
                 self.world.time, time
             ),
-            Ordering::Less => self.world.advance(time - self.world.time),
+            Ordering::Less => self.world.advance(time - self.world.time, &mut self.events),
         }
-        match e {
+
+        match e.clone() {
+            SimEvent::CheckStatusFalloff => (),
+            SimEvent::CdEnd(..) => (),
+            SimEvent::SimStart => (),
+            SimEvent::Other => (),
+            SimEvent::EspritIdk => {
+                if self.world.time >= self.world.in_combat {
+                    for x in self.world.actors.iter() {
+                        if let Some(PlayerState {
+                            job: DynJob::Dnc,
+                            state,
+                            ..
+                        }) = &x.player
+                        {
+                            let mut state = state.borrow_mut();
+                            if let State::Dnc(v) = &mut *state {
+                                let iters = if x.statuses.contains_key(&(None, TECHNICAL_FINISH)) {
+                                    7
+                                } else {
+                                    1
+                                };
+
+                                for _ in 0..iters {
+                                    if self.rng.rng.gen_bool(0.08) {
+                                        if v.esprit > 90 {
+                                            eprintln!("[warn] esprit overcapped from partner.");
+                                        }
+                                        v.esprit += 10;
+                                        println!("esprit: {}", v.esprit.value());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                self.events
+                    .push(self.world.time + 1000, SimEvent::EspritIdk);
+            }
             SimEvent::Event(e) => {
                 match e {
+                    Event::Action(..) => (),
                     Event::ActorTick(id) => {
                         if let Some(actor) = self.world.actors.get_mut(id.0 as usize) {
                             for effect in actor.statuses.values() {
@@ -286,6 +375,11 @@ impl Simulation {
                         if let Some(target_actor) = self.world.actors.get_mut(target.0 as usize) {
                             let key = (if status.unique { None } else { Some(source) }, status);
                             let kind = match kind {
+                                StatusEventKind::FallOff => {
+                                    target_actor.statuses.remove(&key);
+
+                                    StatusReportKind::Remove
+                                }
                                 StatusEventKind::Remove => {
                                     target_actor.statuses.remove(&key);
 
@@ -304,6 +398,9 @@ impl Simulation {
                                             snapshot: None,
                                         },
                                     );
+
+                                    self.events
+                                        .push(time + duration, SimEvent::CheckStatusFalloff);
 
                                     StatusReportKind::Apply { duration, stacks }
                                 }
@@ -324,9 +421,12 @@ impl Simulation {
                                                 time: duration,
                                                 stack: stacks,
                                             },
-                                            snapshot: Some(Box::new(snapshot)),
+                                            snapshot: Some(snapshot),
                                         },
                                     );
+
+                                    self.events
+                                        .push(time + duration, SimEvent::CheckStatusFalloff);
 
                                     StatusReportKind::Apply { duration, stacks }
                                 }
@@ -354,6 +454,8 @@ impl Simulation {
                                         let to = entry.instance.time;
 
                                         entry.instance.stack = stacks;
+
+                                        self.events.push(time + to, SimEvent::CheckStatusFalloff);
 
                                         StatusReportKind::ExtendDuration {
                                             duration,
@@ -530,23 +632,18 @@ impl Simulation {
                         Action::Job(action) => {
                             let state = player.state.borrow();
 
-                            let mut event_sink = SimEventSink::new(
-                                ActorHandle {
-                                    actor,
-                                    id,
-                                    world: &self.world,
-                                },
-                                &mut self.rng,
-                                &mut self.events,
-                                time,
-                            );
+                            let handle = ActorHandle {
+                                actor,
+                                id,
+                                world: &self.world,
+                            };
 
-                            let info = player.job.check_cast(
-                                action,
-                                &*state,
-                                &&self.world,
-                                &mut event_sink,
-                            );
+                            eprintln!("{:?} @ {}", action, time);
+
+                            let info = player
+                                .job
+                                .check_cast(action, &state, &&self.world, handle)
+                                .unwrap();
 
                             drop(state);
 
@@ -561,33 +658,19 @@ impl Simulation {
                                 .as_mut()
                                 .unwrap();
 
-                            let actions = self.actions.get_mut(&id).unwrap();
-
                             let gcd_left = info.gcd.max(player.gcd);
                             let lock_left = info.lock;
 
-                            if let Some(next) = actions.next() {
-                                let (d, next) = match next {
-                                    ActionKind::Normal(ac) => (0, ac),
-                                    ActionKind::Delay(d, ac) => (d, ac),
-                                };
-                                if next.gcd() {
-                                    self.events.push(
-                                        d + time + (gcd_left.max(lock_left) as u32),
-                                        SimEvent::StartCast(id, next),
-                                    );
-                                } else {
-                                    self.events.push(
-                                        d + time + lock_left as u32,
-                                        SimEvent::StartCast(id, next),
-                                    );
-                                }
-                            } else {
-                                self.actions.remove(&id);
-                            }
+                            // println!("{}", gcd_left);
 
                             player.gcd = gcd_left;
                             player.lock = lock_left;
+
+                            self.events
+                                .push(time + player.lock as u32, SimEvent::CdEnd(CdEndEvent::Lock));
+
+                            self.events
+                                .push(time + player.gcd as u32, SimEvent::CdEnd(CdEndEvent::Gcd));
 
                             player.mp = match player.mp.checked_sub(info.mp) {
                                 Some(v) => v,
@@ -595,6 +678,7 @@ impl Simulation {
                             };
 
                             if let Some((cdg, cd, charges)) = info.cd {
+                                // println!("{:?} {:?} {:?}", cdg, cd, charges);
                                 if let Some(cd_state) = player.cooldowns.get_mut(cdg) {
                                     if !cd_state.available(cd, charges) {
                                         panic!(
@@ -605,10 +689,16 @@ impl Simulation {
                                         );
                                     }
                                     cd_state.apply(cd, charges);
+
+                                    self.events.push(
+                                        time + cd_state.cd_until(cd, charges),
+                                        SimEvent::CdEnd(CdEndEvent::JobCd(cdg)),
+                                    );
                                 }
                             }
 
                             if let Some((cdg, cd, charges)) = info.alt_cd {
+                                // println!("{:?} {:?} {:?}", cdg, cd, charges);
                                 if let Some(cd_state) = player.cooldowns.get_mut(cdg) {
                                     if !cd_state.available(cd, charges) {
                                         panic!(
@@ -619,6 +709,11 @@ impl Simulation {
                                         );
                                     }
                                     cd_state.apply(cd, charges);
+
+                                    self.events.push(
+                                        time + cd_state.cd_until(cd, charges),
+                                        SimEvent::CdEnd(CdEndEvent::JobCd(cdg)),
+                                    );
                                 }
                             }
 
@@ -658,9 +753,12 @@ impl Simulation {
 
                             player
                                 .job
-                                .cast_snap(action, &mut state, &&self.world, &mut event_sink);
+                                .cast_snap(action, &mut state, &&self.world, &mut event_sink)
+                                .unwrap();
 
-                            *player.state.borrow_mut() = state;
+                            // println!("{:?} @ {}: {:?}", action, self.world.time, state);
+
+                            *(player.state.borrow_mut()) = state;
                         }
                     }
 
@@ -693,6 +791,26 @@ impl Simulation {
                     self.events.push(time + 3000, SimEvent::AutoAttack(id));
                 }
             }
+        }
+
+        let mut to_remove = vec![];
+
+        for (id, actions) in self.actions.iter_mut() {
+            let actor = &self.world.actors[id.0 as usize];
+
+            let handle = ActorHandle {
+                actor,
+                id: *id,
+                world: &self.world,
+            };
+
+            if actions.0.next(&e, &mut self.events, handle, time) {
+                to_remove.push(*id);
+            }
+        }
+
+        for x in to_remove {
+            self.actions.remove(&x);
         }
 
         Ok(true)
@@ -857,23 +975,33 @@ struct WorldState {
 }
 
 impl WorldState {
-    fn advance(&mut self, time: u32) {
-        for actor in self.actors.iter_mut() {
+    fn advance(&mut self, time: u32, queue: &mut RadixEventQueue<SimEvent>) {
+        for (id, actor) in self.actors.iter_mut().enumerate() {
             if let Some(player) = &mut actor.player {
-                player.cooldowns.iter_mut().for_each(|x| x.advance(time));
+                player.cooldowns.iter_mut().for_each(|x| x.0.advance(time));
                 player.gcd = (player.gcd as u32).saturating_sub(time) as u16;
                 player.lock = (player.lock as u32).saturating_sub(time) as u16;
                 player.state.borrow_mut().advance(time);
             }
             let mut to_remove = Vec::new();
             for (key, status) in actor.statuses.iter_mut() {
+                let time_left = status.instance.time;
                 status.instance.advance(time);
                 if status.instance.time == 0 {
-                    to_remove.push(*key);
+                    to_remove.push((*key, time_left));
                 }
             }
-            for x in &to_remove {
-                actor.statuses.remove(&x);
+            for (x, t) in &to_remove {
+                queue.push(
+                    self.time + t,
+                    SimEvent::Event(Event::Status(StatusEvent {
+                        kind: StatusEventKind::FallOff,
+                        status: x.1,
+                        source: ActorId(id as u16),
+                        target: ActorId(id as u16),
+                    })),
+                );
+                actor.statuses.remove(x);
             }
         }
         self.time += time;
@@ -911,10 +1039,8 @@ struct ActorState {
 
 #[derive(Clone, Debug)]
 struct StatusEntry {
-    // if only one instance of the effect can exist on the target at the same time,
-    // this will be none, otherwise it will be the source ActorId.
     instance: StatusInstance,
-    snapshot: Option<Box<EotSnapshot>>,
+    snapshot: Option<EotSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -974,12 +1100,14 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
         target: ActorId,
         rng: &mut R,
     ) -> u64 {
+        // println!("{:?}", damage);
         let DamageInstance {
             potency,
             dmg_el,
             dmg_ty,
             force_crit,
             force_dhit,
+            falloff,
         } = damage;
         let state = self
             .actor
@@ -992,7 +1120,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
                 .actor(target)
                 .map(|target| target.status_iter())
                 .unwrap_or_default(),
-            state.as_ref().and_then(|(job, state)| job.effect(&*state)),
+            state.as_ref().and_then(|(job, state)| job.effect(state)),
         );
         if let Some(player) = &self.actor.player {
             let ch = match force_crit {
@@ -1016,6 +1144,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
                 player.math.job_attack_stat(),
                 ch,
                 dh,
+                falloff as u64,
                 rng.random(DamageVariance::new()),
                 &buffs,
             )
@@ -1047,7 +1176,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
                 .actor(target)
                 .map(|target| target.status_iter())
                 .unwrap_or_default(),
-            state.as_ref().and_then(|(job, state)| job.effect(&*state)),
+            state.as_ref().and_then(|(job, state)| job.effect(state)),
         );
         if let Some(player) = &self.actor.player {
             player.math.dot_damage_snapshot(
@@ -1081,7 +1210,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
                 .actor(target)
                 .map(|target| target.status_iter())
                 .unwrap_or_default(),
-            player.job.effect(&*state),
+            player.job.effect(&state),
         );
         let ch = {
             let chance = buffs.crit_chance(player.math.crit_chance());
@@ -1102,7 +1231,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
         )
     }
 
-    fn statuses(&self) -> impl Iterator<Item = StatusInstance> {
+    fn statuses(&self) -> impl Iterator<Item = StatusInstance> + 'w {
         self.actor.statuses.values().map(|status| status.instance)
     }
 
@@ -1114,7 +1243,7 @@ impl<'w> ActorRef<'w> for ActorHandle<'w> {
         &self,
         faction: Option<Faction>,
         _: ActionTargetting,
-    ) -> impl Iterator<Item = Self> {
+    ) -> impl Iterator<Item = Self> + 'w {
         self.world.iter_actors().filter(move |handle| {
             handle.actor.targetable
                 && match faction {
@@ -1176,7 +1305,7 @@ impl<'w> DurationInfo for ActorDurInfo<'w> {
             if duration.haste() {
                 let state = player.state.borrow();
                 let buffs = StatusSnapshot {
-                    job: player.job.effect(&*state),
+                    job: player.job.effect(&state),
                     source: self
                         .actor
                         .actor
@@ -1238,15 +1367,13 @@ impl<'w> SimEventSink<'w> {
     }
 }
 
-impl<'w> EventSink<'w, &'w WorldState> for SimEventSink<'w> {
+impl<'w> EventSink<'w> for SimEventSink<'w> {
+    type World = &'w WorldState;
+    type Actor = ActorHandle<'w>;
     type Rng = SimRngSource;
 
     fn source(&self) -> ActorHandle<'w> {
         self.source
-    }
-
-    fn error(&mut self, error: EventError) {
-        panic!("{:?}", error)
     }
 
     fn event(&mut self, event: Event, delay: u32) {
@@ -1255,7 +1382,7 @@ impl<'w> EventSink<'w, &'w WorldState> for SimEventSink<'w> {
     }
 
     fn rng(&mut self) -> &mut Self::Rng {
-        &mut self.rng
+        self.rng
     }
 }
 
@@ -1271,17 +1398,5 @@ impl EventRng for SimRngSource {
         T: 'static,
     {
         self.rng.sample(distr)
-    }
-}
-
-struct FmtStacks(u8);
-
-impl fmt::Display for FmtStacks {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0 > 1 {
-            write!(f, "({})", self.0)
-        } else {
-            write!(f, "")
-        }
     }
 }

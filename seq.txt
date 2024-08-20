@@ -1,0 +1,12 @@
+use samurai::*;
+
+seq opener {
+    dcast(meikyo)
+    
+    wait(20.000)
+    
+    dcast(gekko)
+    dcast(kasha)
+    dcast(yukikaze)
+    
+}

@@ -1,0 +1,24 @@
+opener:
+    standard_step
+    correct_step()
+    correct_step()
+    wait 11.00s
+    standard_finish
+    technical_step
+    correct_step()
+    correct_step()
+    correct_step()
+    correct_step()
+    technical_finish
+    devilment
+    tillana
+    flourish
+    fan_dance_3
+    dance_of_the_dawn
+    if gauge.esprit > 50
+        saber_dance
+        last_dance
+        finishing_move
+    else
+        last_dance
+        
